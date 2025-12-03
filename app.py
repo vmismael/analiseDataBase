@@ -58,23 +58,23 @@ def calculate_time_years(row):
 # --- BARRA LATERAL ---
 st.sidebar.header("Configuração")
 
-# 1. Seletor de Doença (ORDEM ALTERADA: Pulmão primeiro)
+# 1. Seletor de Doença
+# Ordem: Pulmão -> Linfomas -> Mieloma -> Melanoma
 doenca_selecionada = st.sidebar.selectbox(
     "Selecione a Doença",
-    ("Pulmão", "Linfomas", "Mieloma Múltiplo")
+    ("Pulmão", "Linfomas", "Mieloma Múltiplo", "Melanoma Maligno")
 )
 
 # Define a linha do cabeçalho (0-based index no Pandas)
-# Pulmão: Linha 1 visual -> header=1
-# Linfomas: Linha 7 visual -> header=7
-# Mieloma: Linha 2 visual -> header=2
-
 if doenca_selecionada == "Pulmão":
     default_header = 1
 elif doenca_selecionada == "Linfomas":
     default_header = 7 
-else: # Mieloma Múltiplo
+elif doenca_selecionada == "Mieloma Múltiplo":
     default_header = 2
+else: # Melanoma Maligno
+    # Inspecionando o arquivo, o cabeçalho 'Nome, Genero...' está na linha 14 (índice 13)
+    default_header = 13
 
 # 2. Upload
 uploaded_file = st.sidebar.file_uploader(f"Carregue o arquivo de {doenca_selecionada}", type=["csv", "xlsx"])
@@ -95,7 +95,7 @@ if uploaded_file:
         df.columns = df.columns.str.strip()
         
         # --- NORMALIZAÇÃO DE NOMES DE COLUNAS ---
-        # Padronizar Gênero (Linfoma usa 'GENERO', Pulmão usa 'Gênero')
+        # Padronizar Gênero (Linfoma usa 'GENERO', Pulmão usa 'Gênero', Melanoma 'Genero')
         col_genero = [c for c in df.columns if 'GENERO' in c.upper() or 'GÊNERO' in c.upper()]
         if col_genero:
             df.rename(columns={col_genero[0]: 'GENERO'}, inplace=True)
@@ -117,7 +117,6 @@ if uploaded_file:
         else:
             df['Idade'] = np.nan
             
-        # Reforço: Se Idade estiver vazia, calcula usando Data de Nascimento
         if df['Idade'].isna().all() and 'Data de Nascimento' in df.columns:
              df['Idade'] = df.apply(calculate_age, axis=1)
 
@@ -136,10 +135,9 @@ if uploaded_file:
             df['Is_Obito'] = False
 
         # 4. Identificar Recidiva
-        # Pulmão as vezes tem obs na recidiva ex: "S (metastases)", então usamos contains ou isin com variações
         cols_recidiva = [c for c in df.columns if 'Recidiva' in c and '(S) ou (N)' in c]
         if cols_recidiva:
-            # Converte para string maiuscula e ve se começa com S
+            # Detecta qualquer texto que comece com 'S' (Sim, S, S (metastase)...)
             df['Is_Recidiva'] = df[cols_recidiva[0]].astype(str).str.strip().str.upper().str.startswith('S')
         else:
             df['Is_Recidiva'] = False
@@ -151,9 +149,9 @@ if uploaded_file:
         df['Tempo_Anos'] = df.apply(calculate_time_years, axis=1)
 
         # --- PROCESSAMENTO ESPECÍFICO (ESTADIAMENTO) ---
-        # Aplica-se a Linfomas e Pulmão
+        # Aplica-se a Linfomas, Pulmão e Melanoma (Mieloma não)
         tem_estadiamento = False
-        if doenca_selecionada in ["Linfomas", "Pulmão"]:
+        if doenca_selecionada in ["Linfomas", "Pulmão", "Melanoma Maligno"]:
             col_estagio = [c for c in df.columns if 'Estadiamento' in c]
             if col_estagio:
                 df['Estagio_Limpo'] = df[col_estagio[0]].apply(clean_stage)
@@ -186,7 +184,7 @@ if uploaded_file:
             for lbl in time_labels:
                 data[f'Tempo ({lbl})'] = time_counts.get(lbl, 0)
 
-            # Estadiamento (Linfomas e Pulmão)
+            # Estadiamento
             if tem_estadiamento:
                 est_counts = sub_df['Estagio_Limpo'].value_counts()
                 data['Est. I'] = est_counts.get('I', 0)
@@ -206,7 +204,7 @@ if uploaded_file:
             rows.append(create_summary_row(df[df['GENERO'] == 'F'], 'F'))
             rows.append(create_summary_row(df[df['GENERO'] == 'M'], 'M'))
         else:
-            st.warning("Coluna de Gênero não identificada automaticamente.")
+            st.warning("Coluna de Gênero não identificada automaticamente (verifique se chama 'GENERO', 'Gênero' ou 'Genero').")
             
         rows.append(create_summary_row(df, 'Total'))
         
