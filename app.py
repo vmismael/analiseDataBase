@@ -1,154 +1,176 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import numpy as np
+import re
+from datetime import datetime
 
-# Configuração da Página
-st.set_page_config(page_title="Dashboard Oncológico", layout="wide")
+st.set_page_config(page_title="Relatório Oncológico", layout="wide")
+st.title("📋 Relatório Consolidado - Pacientes Oncológicos")
 
-# Título
-st.title("📊 Análise de Dados - Pacientes Oncológicos")
+# --- CSS PARA ESTILIZAR A TABELA ---
+st.markdown("""
+<style>
+    .dataframe {font-size: 14px !important;}
+    th {background-color: #f0f2f6; text-align: center !important;}
+    td {text-align: center !important;}
+</style>
+""", unsafe_allow_html=True)
 
-# --- BARRA LATERAL (UPLOAD E FILTROS) ---
-st.sidebar.header("Configurações")
+# --- FUNÇÕES AUXILIARES ---
 
-# 1. Componente para carregar o arquivo
-uploaded_file = st.sidebar.file_uploader("Carregue seu arquivo (CSV ou Excel)", type=["csv", "xlsx"])
+def clean_stage(val):
+    """Extrai apenas o número romano do estadiamento (I, II, III, IV)"""
+    if pd.isna(val): return None
+    s = str(val).upper()
+    match = re.search(r'\b(IV|III|II|I)\b', s)
+    return match.group(1) if match else None
 
-# Opção para ajustar quantas linhas pular (caso o cabeçalho mude)
-linhas_para_pular = st.sidebar.number_input("Linhas de cabeçalho para pular", min_value=0, value=7, help="Ajuste se o arquivo tiver linhas de metadados antes da tabela real.")
+def check_keyword(row, keywords):
+    """Verifica se alguma palavra-chave aparece em qualquer coluna de texto da linha"""
+    row_str = " ".join([str(val).lower() for val in row.values])
+    return any(k in row_str for k in keywords)
 
-@st.cache_data
-def load_data(file, skiprows):
+def calculate_treatment_time(start_date):
+    """Calcula anos até o final de 2024"""
+    ref_date = pd.Timestamp("2024-12-31")
+    if pd.isna(start_date): return None
+    if start_date > ref_date: return 0
+    return (ref_date - start_date).days / 365.25
+
+# --- CARREGAMENTO ---
+st.sidebar.header("📁 Upload de Dados")
+uploaded_file = st.sidebar.file_uploader("Arraste seu arquivo Excel/CSV aqui", type=["xlsx", "csv"])
+skip_rows = st.sidebar.number_input("Linhas de cabeçalho para pular", value=7, min_value=0)
+
+if uploaded_file:
     try:
-        # Verifica a extensão do arquivo para usar o leitor correto
-        if file.name.endswith('.csv'):
-            # Tenta ler CSV (as vezes o separador é ; ou , e o encoding varia)
+        # Leitura do arquivo
+        if uploaded_file.name.endswith('.csv'):
             try:
-                df = pd.read_csv(file, skiprows=skiprows)
+                df = pd.read_csv(uploaded_file, skiprows=skip_rows)
             except:
-                file.seek(0)
-                df = pd.read_csv(file, skiprows=skiprows, sep=';', encoding='latin1')
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, skiprows=skip_rows, sep=';', encoding='latin1')
         else:
-            # Lê Excel
-            df = pd.read_excel(file, skiprows=skiprows)
-        
-        # Limpar nomes das colunas (remover espaços extras)
+            df = pd.read_excel(uploaded_file, skiprows=skip_rows)
+
+        # Limpeza básica
         df.columns = df.columns.str.strip()
         
-        # Converter colunas de data
-        date_cols = ['Data Primeira Consulta', 'Data de Nascimento', 'Data Diagnóstico   Biópsia']
-        for col in date_cols:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-        
-        # Garantir que Idade é numérico
+        # Conversão de Datas
+        if 'Data Primeira Consulta' in df.columns:
+            df['Data Primeira Consulta'] = pd.to_datetime(df['Data Primeira Consulta'], errors='coerce')
         if 'Idade' in df.columns:
             df['Idade'] = pd.to_numeric(df['Idade'], errors='coerce')
-            
-        return df
-    except Exception as e:
-        st.error(f"Erro ao ler o arquivo: {e}")
-        return pd.DataFrame()
 
-# Lógica Principal: Só roda se houver arquivo
-if uploaded_file is not None:
-    df = load_data(uploaded_file, linhas_para_pular)
-
-    if not df.empty:
-        # --- FILTROS DE DADOS ---
-        st.sidebar.subheader("Filtros de Dados")
+        # --- PROCESSAMENTO DOS DADOS ---
         
-        # Filtro de Gênero
+        # 1. Coluna de Tempo de Tratamento (Anos)
+        if 'Data Primeira Consulta' in df.columns:
+            df['Tempo_Anos'] = df['Data Primeira Consulta'].apply(calculate_treatment_time)
+        else:
+            df['Tempo_Anos'] = np.nan
+
+        # 2. Coluna de Estadiamento Limpo
+        col_estagio = [c for c in df.columns if 'Estadiamento' in c]
+        if col_estagio:
+            df['Estagio_Limpo'] = df[col_estagio[0]].apply(clean_stage)
+        else:
+            df['Estagio_Limpo'] = None
+
+        # 3. Flags de Óbito e Recidiva (Busca por texto)
+        # Palavras-chave para busca
+        df['Flag_Obito'] = df.apply(lambda x: check_keyword(x, ['óbito', 'falecimento', 'morte', 'falecido']), axis=1)
+        df['Flag_Recidiva'] = df.apply(lambda x: check_keyword(x, ['recidiva', 'retorno da doença']), axis=1)
+
+        # --- GERAÇÃO DA TABELA RESUMO ---
+        
+        def generate_row(sub_df, label):
+            # Contagens Básicas
+            total = len(sub_df)
+            
+            # Idade
+            idade_ate_20 = len(sub_df[sub_df['Idade'] <= 20])
+            idade_21_40  = len(sub_df[(sub_df['Idade'] > 20) & (sub_df['Idade'] <= 40)])
+            idade_41_60  = len(sub_df[(sub_df['Idade'] > 40) & (sub_df['Idade'] <= 60)])
+            idade_61_80  = len(sub_df[(sub_df['Idade'] > 60) & (sub_df['Idade'] <= 80)])
+            idade_acima_80 = len(sub_df[sub_df['Idade'] > 80])
+            
+            # Tempo Tratamento
+            tempo_ate_2 = len(sub_df[sub_df['Tempo_Anos'] <= 2])
+            tempo_3_5   = len(sub_df[(sub_df['Tempo_Anos'] >= 3) & (sub_df['Tempo_Anos'] <= 5)])
+            tempo_6_10  = len(sub_df[(sub_df['Tempo_Anos'] >= 6) & (sub_df['Tempo_Anos'] <= 10)])
+            tempo_mais_10 = len(sub_df[sub_df['Tempo_Anos'] > 10])
+            
+            # Estadiamento
+            est_I   = len(sub_df[sub_df['Estagio_Limpo'] == 'I'])
+            est_II  = len(sub_df[sub_df['Estagio_Limpo'] == 'II'])
+            est_III = len(sub_df[sub_df['Estagio_Limpo'] == 'III'])
+            est_IV  = len(sub_df[sub_df['Estagio_Limpo'] == 'IV'])
+            
+            # Óbito e Recidiva
+            obitos = sub_df['Flag_Obito'].sum()
+            recidivas = sub_df['Flag_Recidiva'].sum()
+            
+            return {
+                'Gênero': label,
+                'Linfomas (Total)': total,
+                'Idade (≤20)': idade_ate_20,
+                'Idade (21-40)': idade_21_40,
+                'Idade (41-60)': idade_41_60,
+                'Idade (61-80)': idade_61_80,
+                'Idade (>80)': idade_acima_80,
+                'Tempo (≤2 anos)': tempo_ate_2,
+                'Tempo (3-5 anos)': tempo_3_5,
+                'Tempo (6-10 anos)': tempo_6_10,
+                'Tempo (>10 anos)': tempo_mais_10,
+                'Estágio I': est_I,
+                'Estágio II': est_II,
+                'Estágio III': est_III,
+                'Estágio IV': est_IV,
+                'Óbitos': obitos,
+                'Recidivas (Geral)': recidivas
+            }
+
+        # Separar por Gênero
         if 'GENERO' in df.columns:
-            generos = df['GENERO'].unique().tolist()
-            genero_selecionado = st.sidebar.multiselect("Selecione o Gênero", generos, default=generos)
+            df_f = df[df['GENERO'] == 'F']
+            df_m = df[df['GENERO'] == 'M']
         else:
-            genero_selecionado = []
+            df_f = pd.DataFrame()
+            df_m = pd.DataFrame()
 
-        # Filtro de Estadiamento
-        if 'Estadiamento (is, I, II, III e IV)' in df.columns:
-            # Converte para string para evitar erros de tipos mistos
-            estagios = df['Estadiamento (is, I, II, III e IV)'].astype(str).unique().tolist()
-            estagio_selecionado = st.sidebar.multiselect("Estadiamento", estagios, default=estagios)
-        else:
-            estagio_selecionado = []
+        # Criar as linhas
+        rows = []
+        rows.append(generate_row(df_f, 'Feminino (F)'))
+        rows.append(generate_row(df_m, 'Masculino (M)'))
+        rows.append(generate_row(df, 'TOTAL'))
 
-        # Aplicar Filtros
-        if 'GENERO' in df.columns and 'Estadiamento (is, I, II, III e IV)' in df.columns:
-            df_filtered = df[
-                (df['GENERO'].isin(genero_selecionado)) &
-                (df['Estadiamento (is, I, II, III e IV)'].astype(str).isin(estagio_selecionado))
-            ]
-        else:
-            df_filtered = df # Se não tiver as colunas, mostra tudo
+        # Criar DataFrame Final
+        resumo_df = pd.DataFrame(rows)
+        resumo_df.set_index('Gênero', inplace=True)
 
-        # --- KPIs (INDICADORES) ---
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total de Pacientes (Filtro)", len(df_filtered))
+        # --- EXIBIÇÃO ---
+        st.subheader("Tabela de Dados Consolidados")
+        st.info("Nota: Óbitos e Recidivas são contados buscando palavras-chave ('óbito', 'recidiva') em todas as colunas de texto.")
         
-        if 'Idade' in df_filtered.columns:
-            media_idade = df_filtered['Idade'].mean()
-            col2.metric("Média de Idade", f"{media_idade:.1f} anos")
+        # Exibe a tabela
+        st.dataframe(resumo_df, use_container_width=True)
         
-        if 'Data Diagnóstico   Biópsia' in df_filtered.columns:
-            ano_min = df_filtered['Data Diagnóstico   Biópsia'].dt.year.min()
-            ano_max = df_filtered['Data Diagnóstico   Biópsia'].dt.year.max()
-            if pd.notna(ano_min) and pd.notna(ano_max):
-                col3.metric("Período dos Diagnósticos", f"{int(ano_min)} - {int(ano_max)}")
-
-        st.markdown("---")
-
-        # --- GRÁFICOS ---
+        # Botão de Download
+        csv = resumo_df.to_csv().encode('utf-8')
+        st.download_button(
+            label="💾 Baixar Tabela como CSV",
+            data=csv,
+            file_name='resumo_oncologico.csv',
+            mime='text/csv',
+        )
         
-        # Linha 1: Gênero e Idade
-        c1, c2 = st.columns(2)
-        
-        with c1:
-            if 'GENERO' in df_filtered.columns:
-                st.subheader("Distribuição por Gênero")
-                fig_gen = px.pie(df_filtered, names='GENERO', title='Pacientes por Gênero', hole=0.4)
-                st.plotly_chart(fig_gen, use_container_width=True)
-            
-        with c2:
-            if 'Idade' in df_filtered.columns:
-                st.subheader("Distribuição por Idade")
-                fig_age = px.histogram(df_filtered, x='Idade', nbins=20, title='Histograma de Idade', color_discrete_sequence=['#3366CC'])
-                st.plotly_chart(fig_age, use_container_width=True)
+        # Mostrar dados brutos filtrados para conferência (opcional)
+        with st.expander("Verificar quais pacientes foram marcados como 'Recidiva'"):
+            st.dataframe(df[df['Flag_Recidiva']][['Nome', 'GENERO', 'Diagnóstico Histológico AP', 'Intenção da terapia sistêmica']])
 
-        # Linha 2: Estadiamento e Diagnósticos
-        c3, c4 = st.columns(2)
-        
-        with c3:
-            st.subheader("Estadiamento")
-            if 'Estadiamento (is, I, II, III e IV)' in df_filtered.columns:
-                estagio_counts = df_filtered['Estadiamento (is, I, II, III e IV)'].value_counts().reset_index()
-                estagio_counts.columns = ['Estágio', 'Contagem']
-                fig_est = px.bar(estagio_counts, x='Estágio', y='Contagem', title='Pacientes por Estadiamento', color='Contagem')
-                st.plotly_chart(fig_est, use_container_width=True)
-                
-        with c4:
-            st.subheader("Top 10 Diagnósticos (Histologia)")
-            if 'Diagnóstico Histológico AP' in df_filtered.columns:
-                diag_counts = df_filtered['Diagnóstico Histológico AP'].value_counts().nlargest(10).reset_index()
-                diag_counts.columns = ['Diagnóstico', 'Qtd']
-                fig_diag = px.bar(diag_counts, x='Qtd', y='Diagnóstico', orientation='h', title='Diagnósticos Mais Frequentes')
-                fig_diag.update_layout(yaxis={'categoryorder':'total ascending'})
-                st.plotly_chart(fig_diag, use_container_width=True)
-
-        # Linha 3: Evolução Temporal
-        st.subheader("Evolução de Diagnósticos por Ano")
-        if 'Data Diagnóstico   Biópsia' in df_filtered.columns:
-            df_filtered['Ano Diagnostico'] = df_filtered['Data Diagnóstico   Biópsia'].dt.year
-            timeline = df_filtered.groupby('Ano Diagnostico').size().reset_index(name='Pacientes')
-            fig_time = px.line(timeline, x='Ano Diagnostico', y='Pacientes', markers=True, title='Novos Casos por Ano')
-            st.plotly_chart(fig_time, use_container_width=True)
-
-        # Exibir Tabela
-        with st.expander("Ver Dados Brutos"):
-            st.dataframe(df_filtered)
-    else:
-        st.warning("O arquivo carregado não parece conter dados válidos ou as colunas esperadas.")
-
+    except Exception as e:
+        st.error(f"Erro ao processar arquivo: {e}")
 else:
-    # Tela inicial antes de carregar o arquivo
-    st.info("👆 Por favor, carregue um arquivo CSV ou Excel na barra lateral para começar.")
+    st.info("Aguardando upload do arquivo.")
