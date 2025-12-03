@@ -59,10 +59,9 @@ def calculate_time_years(row):
 st.sidebar.header("Configuração")
 
 # 1. Seletor de Doença
-# Ordem: Pulmão -> Linfomas -> Mieloma -> Melanoma
 doenca_selecionada = st.sidebar.selectbox(
     "Selecione a Doença",
-    ("Pulmão", "Linfomas", "Mieloma Múltiplo", "Melanoma Maligno")
+    ("Pulmão", "Linfomas", "Mieloma Múltiplo", "Melanoma Maligno", "Ginecológico")
 )
 
 # Define a linha do cabeçalho (0-based index no Pandas)
@@ -72,9 +71,11 @@ elif doenca_selecionada == "Linfomas":
     default_header = 7 
 elif doenca_selecionada == "Mieloma Múltiplo":
     default_header = 2
-else: # Melanoma Maligno
-    # Inspecionando o arquivo, o cabeçalho 'Nome, Genero...' está na linha 14 (índice 13)
+elif doenca_selecionada == "Melanoma Maligno":
     default_header = 13
+else: # Ginecológico
+    # Análise do arquivo mostra cabeçalho na linha 8 (índice 8)
+    default_header = 8
 
 # 2. Upload
 uploaded_file = st.sidebar.file_uploader(f"Carregue o arquivo de {doenca_selecionada}", type=["csv", "xlsx"])
@@ -94,8 +95,12 @@ if uploaded_file:
         # Limpeza básica de colunas
         df.columns = df.columns.str.strip()
         
+        # --- PREENCHIMENTO DE GÊNERO ---
+        # Ginecológico geralmente não tem coluna de gênero, assumimos 'F'
+        if doenca_selecionada == "Ginecológico" and not any(c in df.columns for c in ['GENERO', 'Gênero', 'Genero']):
+            df['GENERO'] = 'F'
+
         # --- NORMALIZAÇÃO DE NOMES DE COLUNAS ---
-        # Padronizar Gênero (Linfoma usa 'GENERO', Pulmão usa 'Gênero', Melanoma 'Genero')
         col_genero = [c for c in df.columns if 'GENERO' in c.upper() or 'GÊNERO' in c.upper()]
         if col_genero:
             df.rename(columns={col_genero[0]: 'GENERO'}, inplace=True)
@@ -149,9 +154,9 @@ if uploaded_file:
         df['Tempo_Anos'] = df.apply(calculate_time_years, axis=1)
 
         # --- PROCESSAMENTO ESPECÍFICO (ESTADIAMENTO) ---
-        # Aplica-se a Linfomas, Pulmão e Melanoma (Mieloma não)
+        # Aplica-se a Linfomas, Pulmão, Melanoma e Ginecológico
         tem_estadiamento = False
-        if doenca_selecionada in ["Linfomas", "Pulmão", "Melanoma Maligno"]:
+        if doenca_selecionada in ["Linfomas", "Pulmão", "Melanoma Maligno", "Ginecológico"]:
             col_estagio = [c for c in df.columns if 'Estadiamento' in c]
             if col_estagio:
                 df['Estagio_Limpo'] = df[col_estagio[0]].apply(clean_stage)
@@ -202,16 +207,24 @@ if uploaded_file:
         rows = []
         if 'GENERO' in df.columns:
             rows.append(create_summary_row(df[df['GENERO'] == 'F'], 'F'))
-            rows.append(create_summary_row(df[df['GENERO'] == 'M'], 'M'))
+            # Se houver Masculino (raro em gineco, mas possível em dados sujos ou câncer de mama masculino se for o caso)
+            if 'M' in df['GENERO'].unique():
+                rows.append(create_summary_row(df[df['GENERO'] == 'M'], 'M'))
+            elif doenca_selecionada != "Ginecológico": # Mostra M padrão para outros
+                rows.append(create_summary_row(df[df['GENERO'] == 'M'], 'M'))
         else:
-            st.warning("Coluna de Gênero não identificada automaticamente (verifique se chama 'GENERO', 'Gênero' ou 'Genero').")
+             # Fallback caso algo dê errado
+            rows.append(create_summary_row(df, 'Total'))
             
-        rows.append(create_summary_row(df, 'Total'))
+        # Adiciona Total sempre
+        if len(rows) > 0 and rows[-1]['Gênero'] != 'Total':
+             rows.append(create_summary_row(df, 'Total'))
         
         # DataFrame Final
         resumo_df = pd.DataFrame(rows)
         if not resumo_df.empty:
-            resumo_df.set_index('Gênero', inplace=True)
+            if 'Gênero' in resumo_df.columns:
+                resumo_df.set_index('Gênero', inplace=True)
         
         # Exibição
         st.subheader(f"Resumo: {doenca_selecionada}")
