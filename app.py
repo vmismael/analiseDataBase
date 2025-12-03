@@ -4,173 +4,227 @@ import numpy as np
 import re
 from datetime import datetime
 
-st.set_page_config(page_title="Relatório Oncológico", layout="wide")
-st.title("📋 Relatório Consolidado - Pacientes Oncológicos")
+# Configuração da Página
+st.set_page_config(page_title="Relatório de Pacientes", layout="wide")
+st.title("📋 Relatório Consolidado - Dados Oncológicos")
 
-# --- CSS PARA ESTILIZAR A TABELA ---
+# --- ESTILO CSS PARA TABELA COMPACTA ---
 st.markdown("""
 <style>
-    .dataframe {font-size: 14px !important;}
-    th {background-color: #f0f2f6; text-align: center !important;}
-    td {text-align: center !important;}
+    .dataframe {font-size: 12px !important;}
+    table {width: 100%;}
+    th, td {text-align: center !important; padding: 8px !important;}
+    th {background-color: #f0f2f6;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNÇÕES AUXILIARES ---
+# --- FUNÇÕES DE LIMPEZA E CÁLCULO ---
 
 def clean_stage(val):
-    """Extrai apenas o número romano do estadiamento (I, II, III, IV)"""
+    """Extrai I, II, III, IV do texto do estadiamento"""
     if pd.isna(val): return None
     s = str(val).upper()
+    # Procura algarismos romanos isolados
     match = re.search(r'\b(IV|III|II|I)\b', s)
     return match.group(1) if match else None
 
-def check_keyword(row, keywords):
-    """Verifica se alguma palavra-chave aparece em qualquer coluna de texto da linha"""
-    row_str = " ".join([str(val).lower() for val in row.values])
-    return any(k in row_str for k in keywords)
+def get_year_from_date(val):
+    """Extrai ano de uma data"""
+    try:
+        if pd.isna(val): return None
+        return pd.to_datetime(val).year
+    except:
+        return None
 
-def calculate_treatment_time(start_date):
-    """Calcula anos até o final de 2024"""
-    ref_date = pd.Timestamp("2024-12-31")
-    if pd.isna(start_date): return None
-    if start_date > ref_date: return 0
-    return (ref_date - start_date).days / 365.25
+def calculate_time_years(row):
+    """
+    Calcula tempo de tratamento em anos.
+    Se Óbito: Data Óbito - Data 1ª Consulta
+    Se Vivo:  2024-12-31 - Data 1ª Consulta
+    """
+    try:
+        start_date = row['Data Primeira Consulta']
+        obito_date = row['Data_Obito_Valida'] # Coluna auxiliar criada depois
+        
+        if pd.isna(start_date): return None
+        
+        end_date = pd.Timestamp("2024-12-31")
+        if pd.notna(obito_date):
+            end_date = obito_date
+            
+        if start_date > end_date: return 0
+        
+        return (end_date - start_date).days / 365.25
+    except:
+        return None
 
-# --- CARREGAMENTO ---
-st.sidebar.header("📁 Upload de Dados")
-uploaded_file = st.sidebar.file_uploader("Arraste seu arquivo Excel/CSV aqui", type=["xlsx", "csv"])
-skip_rows = st.sidebar.number_input("Linhas de cabeçalho para pular", value=7, min_value=0)
+# --- CARREGAMENTO DO ARQUIVO ---
+st.sidebar.header("📁 Importar Arquivo")
+uploaded_file = st.sidebar.file_uploader("Selecione o arquivo CSV ou Excel", type=["csv", "xlsx"])
+
+# Opção manual caso a detecção automática falhe
+header_row = st.sidebar.number_input("Linha do Cabeçalho (0-based)", value=7, min_value=0, help="Geralmente é 7 para este modelo de arquivo.")
 
 if uploaded_file:
     try:
-        # Leitura do arquivo
-        if uploaded_file.name.endswith('.csv'):
+        # 1. Leitura do Arquivo
+        if uploaded_file.name.lower().endswith('.csv'):
             try:
-                df = pd.read_csv(uploaded_file, skiprows=skip_rows)
+                df = pd.read_csv(uploaded_file, header=header_row)
             except:
                 uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, skiprows=skip_rows, sep=';', encoding='latin1')
+                df = pd.read_csv(uploaded_file, header=header_row, sep=';', encoding='latin1')
         else:
-            df = pd.read_excel(uploaded_file, skiprows=skip_rows)
+            df = pd.read_excel(uploaded_file, header=header_row)
 
-        # Limpeza básica
+        # 2. Normalização de Colunas (strip espaços)
         df.columns = df.columns.str.strip()
         
-        # Conversão de Datas
-        if 'Data Primeira Consulta' in df.columns:
+        # Verificar se colunas essenciais existem
+        required_cols = ['GENERO', 'Data Primeira Consulta']
+        if not all(col in df.columns for col in required_cols):
+            st.error(f"Colunas não encontradas. Verifique a linha do cabeçalho. Colunas lidas: {list(df.columns)}")
+        else:
+            # --- PROCESSAMENTO ---
+            
+            # Converter Datas
             df['Data Primeira Consulta'] = pd.to_datetime(df['Data Primeira Consulta'], errors='coerce')
-        if 'Idade' in df.columns:
             df['Idade'] = pd.to_numeric(df['Idade'], errors='coerce')
-
-        # --- PROCESSAMENTO DOS DADOS ---
-        
-        # 1. Coluna de Tempo de Tratamento (Anos)
-        if 'Data Primeira Consulta' in df.columns:
-            df['Tempo_Anos'] = df['Data Primeira Consulta'].apply(calculate_treatment_time)
-        else:
-            df['Tempo_Anos'] = np.nan
-
-        # 2. Coluna de Estadiamento Limpo
-        col_estagio = [c for c in df.columns if 'Estadiamento' in c]
-        if col_estagio:
-            df['Estagio_Limpo'] = df[col_estagio[0]].apply(clean_stage)
-        else:
-            df['Estagio_Limpo'] = None
-
-        # 3. Flags de Óbito e Recidiva (Busca por texto)
-        # Palavras-chave para busca
-        df['Flag_Obito'] = df.apply(lambda x: check_keyword(x, ['óbito', 'falecimento', 'morte', 'falecido']), axis=1)
-        df['Flag_Recidiva'] = df.apply(lambda x: check_keyword(x, ['recidiva', 'retorno da doença']), axis=1)
-
-        # --- GERAÇÃO DA TABELA RESUMO ---
-        
-        def generate_row(sub_df, label):
-            # Contagens Básicas
-            total = len(sub_df)
             
-            # Idade
-            idade_ate_20 = len(sub_df[sub_df['Idade'] <= 20])
-            idade_21_40  = len(sub_df[(sub_df['Idade'] > 20) & (sub_df['Idade'] <= 40)])
-            idade_41_60  = len(sub_df[(sub_df['Idade'] > 40) & (sub_df['Idade'] <= 60)])
-            idade_61_80  = len(sub_df[(sub_df['Idade'] > 60) & (sub_df['Idade'] <= 80)])
-            idade_acima_80 = len(sub_df[sub_df['Idade'] > 80])
+            # Tratamento da Coluna Óbito (que contém datas ou NaN) e Recidiva
+            # Mapeando nomes prováveis das colunas baseadas no arquivo novo
+            col_obito = [c for c in df.columns if 'Óbito' in c][0]
+            col_recidiva_flag = [c for c in df.columns if 'Recidiva (S) ou (N)' in c][0]
+            col_recidiva_data = [c for c in df.columns if 'Data de Inicio do tratamento pós recidiva' in c]
             
-            # Tempo Tratamento
-            tempo_ate_2 = len(sub_df[sub_df['Tempo_Anos'] <= 2])
-            tempo_3_5   = len(sub_df[(sub_df['Tempo_Anos'] >= 3) & (sub_df['Tempo_Anos'] <= 5)])
-            tempo_6_10  = len(sub_df[(sub_df['Tempo_Anos'] >= 6) & (sub_df['Tempo_Anos'] <= 10)])
-            tempo_mais_10 = len(sub_df[sub_df['Tempo_Anos'] > 10])
+            # Converter coluna de Óbito para data real (para quem morreu)
+            df['Data_Obito_Valida'] = pd.to_datetime(df[col_obito], errors='coerce')
+            # Flag booleana de óbito (se tem data, morreu)
+            df['Is_Obito'] = df['Data_Obito_Valida'].notna()
             
-            # Estadiamento
-            est_I   = len(sub_df[sub_df['Estagio_Limpo'] == 'I'])
-            est_II  = len(sub_df[sub_df['Estagio_Limpo'] == 'II'])
-            est_III = len(sub_df[sub_df['Estagio_Limpo'] == 'III'])
-            est_IV  = len(sub_df[sub_df['Estagio_Limpo'] == 'IV'])
+            # Flag de Recidiva
+            df['Is_Recidiva'] = df[col_recidiva_flag].astype(str).str.strip().str.upper() == 'S'
             
-            # Óbito e Recidiva
-            obitos = sub_df['Flag_Obito'].sum()
-            recidivas = sub_df['Flag_Recidiva'].sum()
+            # Ano da Recidiva (para as colunas 202X)
+            if col_recidiva_data:
+                df['Ano_Recidiva'] = pd.to_datetime(df[col_recidiva_data[0]], errors='coerce').dt.year
+            else:
+                df['Ano_Recidiva'] = np.nan
+
+            # Tempo de Tratamento
+            df['Tempo_Anos'] = df.apply(calculate_time_years, axis=1)
             
-            return {
-                'Gênero': label,
-                'Linfomas (Total)': total,
-                'Idade (≤20)': idade_ate_20,
-                'Idade (21-40)': idade_21_40,
-                'Idade (41-60)': idade_41_60,
-                'Idade (61-80)': idade_61_80,
-                'Idade (>80)': idade_acima_80,
-                'Tempo (≤2 anos)': tempo_ate_2,
-                'Tempo (3-5 anos)': tempo_3_5,
-                'Tempo (6-10 anos)': tempo_6_10,
-                'Tempo (>10 anos)': tempo_mais_10,
-                'Estágio I': est_I,
-                'Estágio II': est_II,
-                'Estágio III': est_III,
-                'Estágio IV': est_IV,
-                'Óbitos': obitos,
-                'Recidivas (Geral)': recidivas
-            }
+            # Estadiamento Limpo
+            col_estagio = [c for c in df.columns if 'Estadiamento' in c][0]
+            df['Estagio_Limpo'] = df[col_estagio].apply(clean_stage)
 
-        # Separar por Gênero
-        if 'GENERO' in df.columns:
-            df_f = df[df['GENERO'] == 'F']
-            df_m = df[df['GENERO'] == 'M']
-        else:
-            df_f = pd.DataFrame()
-            df_m = pd.DataFrame()
+            # --- GERAÇÃO DA TABELA ---
+            
+            def create_summary_row(sub_df, label):
+                # Totais
+                total = len(sub_df)
+                
+                # Faixas Etárias
+                age_bins = [0, 20, 40, 60, 80, 150]
+                age_labels = ['≤20', '21-40', '41-60', '61-80', '>80']
+                # cut divide em faixas, value_counts conta
+                if not sub_df.empty and sub_df['Idade'].notna().any():
+                    age_counts = pd.cut(sub_df['Idade'], bins=age_bins, labels=age_labels, right=True).value_counts()
+                else:
+                    age_counts = pd.Series(0, index=age_labels)
 
-        # Criar as linhas
-        rows = []
-        rows.append(generate_row(df_f, 'Feminino (F)'))
-        rows.append(generate_row(df_m, 'Masculino (M)'))
-        rows.append(generate_row(df, 'TOTAL'))
+                # Faixas Tempo Tratamento
+                time_bins = [-1, 2, 5, 10, 100] # -1 a 2, 2 a 5, 5 a 10...
+                time_labels = ['≤2 anos', '3-5 anos', '6-10 anos', '>10 Anos']
+                if not sub_df.empty and sub_df['Tempo_Anos'].notna().any():
+                    time_counts = pd.cut(sub_df['Tempo_Anos'], bins=time_bins, labels=time_labels).value_counts()
+                else:
+                    time_counts = pd.Series(0, index=time_labels)
 
-        # Criar DataFrame Final
-        resumo_df = pd.DataFrame(rows)
-        resumo_df.set_index('Gênero', inplace=True)
+                # Estadiamento
+                est_I   = len(sub_df[sub_df['Estagio_Limpo'] == 'I'])
+                est_II  = len(sub_df[sub_df['Estagio_Limpo'] == 'II'])
+                est_III = len(sub_df[sub_df['Estagio_Limpo'] == 'III'])
+                est_IV  = len(sub_df[sub_df['Estagio_Limpo'] == 'IV'])
 
-        # --- EXIBIÇÃO ---
-        st.subheader("Tabela de Dados Consolidados")
-        st.info("Nota: Óbitos e Recidivas são contados buscando palavras-chave ('óbito', 'recidiva') em todas as colunas de texto.")
-        
-        # Exibe a tabela
-        st.dataframe(resumo_df, use_container_width=True)
-        
-        # Botão de Download
-        csv = resumo_df.to_csv().encode('utf-8')
-        st.download_button(
-            label="💾 Baixar Tabela como CSV",
-            data=csv,
-            file_name='resumo_oncologico.csv',
-            mime='text/csv',
-        )
-        
-        # Mostrar dados brutos filtrados para conferência (opcional)
-        with st.expander("Verificar quais pacientes foram marcados como 'Recidiva'"):
-            st.dataframe(df[df['Flag_Recidiva']][['Nome', 'GENERO', 'Diagnóstico Histológico AP', 'Intenção da terapia sistêmica']])
+                # Óbitos
+                obitos = sub_df['Is_Obito'].sum()
+                
+                # Recidivas (Geral e por Ano Recente)
+                recidivas_total = sub_df['Is_Recidiva'].sum()
+                
+                # Montar Dicionário da Linha
+                data = {
+                    'Gênero': label,
+                    'Linfomas (Total)': total,
+                    
+                    # Idade
+                    'Idade (≤20)': age_counts.get('≤20', 0),
+                    'Idade (21-40)': age_counts.get('21-40', 0),
+                    'Idade (41-60)': age_counts.get('41-60', 0),
+                    'Idade (61-80)': age_counts.get('61-80', 0),
+                    'Idade (>80)': age_counts.get('>80', 0),
+                    
+                    # Tempo
+                    'Tempo (≤2 anos)': time_counts.get('≤2 anos', 0),
+                    'Tempo (3-5 anos)': time_counts.get('3-5 anos', 0),
+                    'Tempo (6-10 anos)': time_counts.get('6-10 anos', 0),
+                    'Tempo (>10 Anos)': time_counts.get('>10 Anos', 0),
+                    
+                    # Estadiamento
+                    'Est. I': est_I,
+                    'Est. II': est_II,
+                    'Est. III': est_III,
+                    'Est. IV': est_IV,
+                    
+                    'Óbitos': obitos,
+                    # 'Recidivas (Total)': recidivas_total # Opcional, se quiser o total geral
+                }
+                
+                # Adicionar colunas dinâmicas de Recidiva por Ano (ex: Recidiva 2022)
+                # Vamos pegar os anos presentes no dataset geral para manter consistência das colunas
+                anos_relevantes = sorted(df['Ano_Recidiva'].dropna().unique())
+                for ano in anos_relevantes:
+                    ano_int = int(ano)
+                    qtd_ano = len(sub_df[sub_df['Ano_Recidiva'] == ano])
+                    data[f'{ano_int} (Recidiva)'] = qtd_ano
+                
+                # Se não houver anos detectados, coloca uma coluna genérica
+                if not anos_relevantes:
+                    data['Recidivas (Total)'] = recidivas_total
+                
+                return data
+
+            # Separar grupos
+            rows = []
+            rows.append(create_summary_row(df[df['GENERO'] == 'F'], 'F'))
+            rows.append(create_summary_row(df[df['GENERO'] == 'M'], 'M'))
+            rows.append(create_summary_row(df, 'Total'))
+            
+            # Criar DataFrame Final
+            resumo_df = pd.DataFrame(rows).set_index('Gênero')
+            
+            # Transpor se necessário (mas o pedido foi Linhas F/M/Total, então mantemos assim)
+            
+            # EXIBIR
+            st.write("### Tabela Consolidada")
+            st.dataframe(resumo_df, use_container_width=True)
+            
+            # Download
+            csv = resumo_df.to_csv().encode('utf-8')
+            st.download_button("💾 Baixar Tabela CSV", csv, "resumo_oncologico_v2.csv", "text/csv")
+            
+            # --- DEBUG (OPCIONAL - REMOVA SE NÃO QUISER VER) ---
+            with st.expander("Verificar detecção de Óbitos e Recidivas"):
+                st.write("Pacientes detectados como Óbito (Coluna tem Data):")
+                st.dataframe(df[df['Is_Obito']][['Nome', 'GENERO', col_obito]])
+                
+                st.write("Pacientes detectados como Recidiva (Flag = S):")
+                st.dataframe(df[df['Is_Recidiva']][['Nome', 'GENERO', col_recidiva_flag, 'Ano_Recidiva']])
 
     except Exception as e:
-        st.error(f"Erro ao processar arquivo: {e}")
+        st.error(f"Erro ao processar: {e}")
+        st.info("Dica: Verifique se o arquivo não está corrompido e se a linha do cabeçalho (7) está correta.")
+
 else:
-    st.info("Aguardando upload do arquivo.")
+    st.info("Aguardando arquivo...")
