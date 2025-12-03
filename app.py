@@ -61,7 +61,7 @@ st.sidebar.header("Configuração")
 # 1. Seletor de Doença
 doenca_selecionada = st.sidebar.selectbox(
     "Selecione a Doença",
-    ("Pulmão", "Linfomas", "Mieloma Múltiplo", "Melanoma Maligno", "Ginecológico")
+    ("Pulmão", "Linfomas", "Mieloma Múltiplo", "Melanoma Maligno", "Ginecológico", "Gástrico")
 )
 
 # Define a linha do cabeçalho (0-based index no Pandas)
@@ -73,9 +73,11 @@ elif doenca_selecionada == "Mieloma Múltiplo":
     default_header = 2
 elif doenca_selecionada == "Melanoma Maligno":
     default_header = 13
-else: # Ginecológico
-    # Análise do arquivo mostra cabeçalho na linha 8 (índice 8)
+elif doenca_selecionada == "Ginecológico":
     default_header = 8
+else: # Gástrico
+    # Análise do arquivo mostra cabeçalho na linha 3 (índice 2)
+    default_header = 2
 
 # 2. Upload
 uploaded_file = st.sidebar.file_uploader(f"Carregue o arquivo de {doenca_selecionada}", type=["csv", "xlsx"])
@@ -95,8 +97,7 @@ if uploaded_file:
         # Limpeza básica de colunas
         df.columns = df.columns.str.strip()
         
-        # --- PREENCHIMENTO DE GÊNERO ---
-        # Ginecológico geralmente não tem coluna de gênero, assumimos 'F'
+        # --- PREENCHIMENTO DE GÊNERO (Ginecológico) ---
         if doenca_selecionada == "Ginecológico" and not any(c in df.columns for c in ['GENERO', 'Gênero', 'Genero']):
             df['GENERO'] = 'F'
 
@@ -115,7 +116,7 @@ if uploaded_file:
         if 'Data Primeira Consulta' in df.columns:
             df['Data Primeira Consulta'] = pd.to_datetime(df['Data Primeira Consulta'], errors='coerce')
         
-        # 2. Idade (Lê coluna ou calcula)
+        # 2. Idade
         col_idade = [c for c in df.columns if 'Idade' in c]
         if col_idade:
             df['Idade'] = pd.to_numeric(df[col_idade[0]], errors='coerce')
@@ -154,9 +155,9 @@ if uploaded_file:
         df['Tempo_Anos'] = df.apply(calculate_time_years, axis=1)
 
         # --- PROCESSAMENTO ESPECÍFICO (ESTADIAMENTO) ---
-        # Aplica-se a Linfomas, Pulmão, Melanoma e Ginecológico
+        # Aplica-se a todos exceto Mieloma
         tem_estadiamento = False
-        if doenca_selecionada in ["Linfomas", "Pulmão", "Melanoma Maligno", "Ginecológico"]:
+        if doenca_selecionada in ["Linfomas", "Pulmão", "Melanoma Maligno", "Ginecológico", "Gástrico"]:
             col_estagio = [c for c in df.columns if 'Estadiamento' in c]
             if col_estagio:
                 df['Estagio_Limpo'] = df[col_estagio[0]].apply(clean_stage)
@@ -207,25 +208,26 @@ if uploaded_file:
         rows = []
         if 'GENERO' in df.columns:
             rows.append(create_summary_row(df[df['GENERO'] == 'F'], 'F'))
-            # Se houver Masculino (raro em gineco, mas possível em dados sujos ou câncer de mama masculino se for o caso)
-            if 'M' in df['GENERO'].unique():
+            # Masculino (padrão)
+            if doenca_selecionada != "Ginecológico":
                 rows.append(create_summary_row(df[df['GENERO'] == 'M'], 'M'))
-            elif doenca_selecionada != "Ginecológico": # Mostra M padrão para outros
+            elif 'M' in df['GENERO'].unique(): # Caso haja M em gineco
                 rows.append(create_summary_row(df[df['GENERO'] == 'M'], 'M'))
         else:
-             # Fallback caso algo dê errado
             rows.append(create_summary_row(df, 'Total'))
             
-        # Adiciona Total sempre
-        if len(rows) > 0 and rows[-1]['Gênero'] != 'Total':
-             rows.append(create_summary_row(df, 'Total'))
+        # Adiciona Total se houver mais de uma linha
+        if len(rows) > 0:
+            rows.append(create_summary_row(df, 'Total'))
         
         # DataFrame Final
         resumo_df = pd.DataFrame(rows)
         if not resumo_df.empty:
             if 'Gênero' in resumo_df.columns:
                 resumo_df.set_index('Gênero', inplace=True)
-        
+            # Remove duplicata do Total se necessário
+            resumo_df = resumo_df[~resumo_df.index.duplicated(keep='last')]
+
         # Exibição
         st.subheader(f"Resumo: {doenca_selecionada}")
         st.dataframe(resumo_df, use_container_width=True)
