@@ -58,22 +58,23 @@ def calculate_time_years(row):
 # --- BARRA LATERAL ---
 st.sidebar.header("Configuração")
 
-# 1. Seletor de Doença
+# 1. Seletor de Doença (ORDEM ALTERADA: Pulmão primeiro)
 doenca_selecionada = st.sidebar.selectbox(
     "Selecione a Doença",
-    ("Linfomas", "Mieloma Múltiplo", "Pulmão")
+    ("Pulmão", "Linfomas", "Mieloma Múltiplo")
 )
 
 # Define a linha do cabeçalho (0-based index no Pandas)
-# Linfomas: Linha 7 visual -> header=7 (no código anterior usamos 7)
-# Mieloma: Linha 2 visual -> header=2
 # Pulmão: Linha 1 visual -> header=1
-if doenca_selecionada == "Linfomas":
-    default_header = 7 
-elif doenca_selecionada == "Mieloma Múltiplo":
-    default_header = 2
-else: # Pulmão
+# Linfomas: Linha 7 visual -> header=7
+# Mieloma: Linha 2 visual -> header=2
+
+if doenca_selecionada == "Pulmão":
     default_header = 1
+elif doenca_selecionada == "Linfomas":
+    default_header = 7 
+else: # Mieloma Múltiplo
+    default_header = 2
 
 # 2. Upload
 uploaded_file = st.sidebar.file_uploader(f"Carregue o arquivo de {doenca_selecionada}", type=["csv", "xlsx"])
@@ -110,13 +111,10 @@ if uploaded_file:
             df['Data Primeira Consulta'] = pd.to_datetime(df['Data Primeira Consulta'], errors='coerce')
         
         # 2. Idade (Lê coluna ou calcula)
-        # Tenta achar coluna explícita de Idade
         col_idade = [c for c in df.columns if 'Idade' in c]
         if col_idade:
             df['Idade'] = pd.to_numeric(df[col_idade[0]], errors='coerce')
         else:
-            # Se não achar coluna com nome "Idade", tenta usar coluna sem nome (Unnamed) se houver, 
-            # ou calcula pela data de nascimento
             df['Idade'] = np.nan
             
         # Reforço: Se Idade estiver vazia, calcula usando Data de Nascimento
@@ -138,9 +136,11 @@ if uploaded_file:
             df['Is_Obito'] = False
 
         # 4. Identificar Recidiva
+        # Pulmão as vezes tem obs na recidiva ex: "S (metastases)", então usamos contains ou isin com variações
         cols_recidiva = [c for c in df.columns if 'Recidiva' in c and '(S) ou (N)' in c]
         if cols_recidiva:
-            df['Is_Recidiva'] = df[cols_recidiva[0]].astype(str).str.strip().str.upper().isin(['S', 'SIM', 'S (METASTASES CEREBRAIS)'])
+            # Converte para string maiuscula e ve se começa com S
+            df['Is_Recidiva'] = df[cols_recidiva[0]].astype(str).str.strip().str.upper().str.startswith('S')
         else:
             df['Is_Recidiva'] = False
             
@@ -225,7 +225,7 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"Erro ao processar o arquivo: {e}")
-        st.info(f"Dica: Verifique se o arquivo é realmente de **{doenca_selecionada}** e se o cabeçalho está na linha esperada.")
+        st.info(f"Dica: Verifique se o arquivo é realmente de **{doenca_selecionada}**.")
 
 else:
     st.info(f"Aguardando arquivo de **{doenca_selecionada}**.")
