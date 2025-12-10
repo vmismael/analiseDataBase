@@ -59,14 +59,18 @@ def calculate_time_years(row):
 st.sidebar.header("Configuração")
 
 # 1. Seletor de Doença
+# NOVA ORDEM: Pulmão -> Próstata -> Linfomas -> Mieloma -> Melanoma -> Gineco -> Gástrico
 doenca_selecionada = st.sidebar.selectbox(
     "Selecione a Doença",
-    ("Pulmão", "Linfomas", "Mieloma Múltiplo", "Melanoma Maligno", "Ginecológico", "Gástrico")
+    ("Pulmão", "Próstata", "Linfomas", "Mieloma Múltiplo", "Melanoma Maligno", "Ginecológico", "Gástrico")
 )
 
 # Define a linha do cabeçalho (0-based index no Pandas)
 if doenca_selecionada == "Pulmão":
     default_header = 1
+elif doenca_selecionada == "Próstata":
+    # Análise do arquivo mostra cabeçalho na linha 11 (índice 10)
+    default_header = 10
 elif doenca_selecionada == "Linfomas":
     default_header = 7 
 elif doenca_selecionada == "Mieloma Múltiplo":
@@ -76,7 +80,6 @@ elif doenca_selecionada == "Melanoma Maligno":
 elif doenca_selecionada == "Ginecológico":
     default_header = 8
 else: # Gástrico
-    # Análise do arquivo mostra cabeçalho na linha 3 (índice 2)
     default_header = 2
 
 # 2. Upload
@@ -97,9 +100,12 @@ if uploaded_file:
         # Limpeza básica de colunas
         df.columns = df.columns.str.strip()
         
-        # --- PREENCHIMENTO DE GÊNERO (Ginecológico) ---
+        # --- PREENCHIMENTO DE GÊNERO ---
+        # Ginecológico -> F, Próstata -> M
         if doenca_selecionada == "Ginecológico" and not any(c in df.columns for c in ['GENERO', 'Gênero', 'Genero']):
             df['GENERO'] = 'F'
+        if doenca_selecionada == "Próstata" and not any(c in df.columns for c in ['GENERO', 'Gênero', 'Genero']):
+            df['GENERO'] = 'M'
 
         # --- NORMALIZAÇÃO DE NOMES DE COLUNAS ---
         col_genero = [c for c in df.columns if 'GENERO' in c.upper() or 'GÊNERO' in c.upper()]
@@ -143,7 +149,7 @@ if uploaded_file:
         # 4. Identificar Recidiva
         cols_recidiva = [c for c in df.columns if 'Recidiva' in c and '(S) ou (N)' in c]
         if cols_recidiva:
-            # Detecta qualquer texto que comece com 'S' (Sim, S, S (metastase)...)
+            # Detecta qualquer texto que comece com 'S' (Sim, S, S - Progressão...)
             df['Is_Recidiva'] = df[cols_recidiva[0]].astype(str).str.strip().str.upper().str.startswith('S')
         else:
             df['Is_Recidiva'] = False
@@ -157,7 +163,7 @@ if uploaded_file:
         # --- PROCESSAMENTO ESPECÍFICO (ESTADIAMENTO) ---
         # Aplica-se a todos exceto Mieloma
         tem_estadiamento = False
-        if doenca_selecionada in ["Linfomas", "Pulmão", "Melanoma Maligno", "Ginecológico", "Gástrico"]:
+        if doenca_selecionada in ["Linfomas", "Pulmão", "Próstata", "Melanoma Maligno", "Ginecológico", "Gástrico"]:
             col_estagio = [c for c in df.columns if 'Estadiamento' in c]
             if col_estagio:
                 df['Estagio_Limpo'] = df[col_estagio[0]].apply(clean_stage)
@@ -207,25 +213,26 @@ if uploaded_file:
         # Criar linhas (F, M, Total)
         rows = []
         if 'GENERO' in df.columns:
-            rows.append(create_summary_row(df[df['GENERO'] == 'F'], 'F'))
-            # Masculino (padrão)
-            if doenca_selecionada != "Ginecológico":
-                rows.append(create_summary_row(df[df['GENERO'] == 'M'], 'M'))
-            elif 'M' in df['GENERO'].unique(): # Caso haja M em gineco
+            # Adiciona F se houver (ou se for Gineco)
+            if 'F' in df['GENERO'].unique() or doenca_selecionada == "Ginecológico":
+                rows.append(create_summary_row(df[df['GENERO'] == 'F'], 'F'))
+            
+            # Adiciona M se houver (ou se for Próstata)
+            if 'M' in df['GENERO'].unique() or doenca_selecionada == "Próstata":
                 rows.append(create_summary_row(df[df['GENERO'] == 'M'], 'M'))
         else:
+            # Fallback se algo der errado com a coluna Genero
             rows.append(create_summary_row(df, 'Total'))
             
-        # Adiciona Total se houver mais de uma linha
-        if len(rows) > 0:
-            rows.append(create_summary_row(df, 'Total'))
+        # Adiciona Total sempre (remove duplicata depois se só tiver 1 linha)
+        rows.append(create_summary_row(df, 'Total'))
         
         # DataFrame Final
         resumo_df = pd.DataFrame(rows)
         if not resumo_df.empty:
             if 'Gênero' in resumo_df.columns:
                 resumo_df.set_index('Gênero', inplace=True)
-            # Remove duplicata do Total se necessário
+            # Remove duplicata do Total se necessário (ex: se só tem M e Total iguais)
             resumo_df = resumo_df[~resumo_df.index.duplicated(keep='last')]
 
         # Exibição
